@@ -42,6 +42,7 @@ type testConn struct {
 	closed bool
 	reads  [][]byte
 	writes [][]byte
+	remote net.Addr
 }
 
 type testPacketConn struct {
@@ -83,9 +84,14 @@ func (c *testConn) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (c *testConn) Close() error                     { c.closed = true; return nil }
-func (c *testConn) LocalAddr() net.Addr              { return &net.TCPAddr{} }
-func (c *testConn) RemoteAddr() net.Addr             { return &net.TCPAddr{} }
+func (c *testConn) Close() error        { c.closed = true; return nil }
+func (c *testConn) LocalAddr() net.Addr { return &net.TCPAddr{} }
+func (c *testConn) RemoteAddr() net.Addr {
+	if c.remote != nil {
+		return c.remote
+	}
+	return &net.TCPAddr{}
+}
 func (c *testConn) SetDeadline(time.Time) error      { return nil }
 func (c *testConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *testConn) SetWriteDeadline(time.Time) error { return nil }
@@ -176,6 +182,69 @@ func TestConnTrackerCollectsDetailedTCPDimensions(t *testing.T) {
 	}
 	if record.UploadBytes != 5 || record.DownloadBytes != 3 || record.ConnectionCount != 1 {
 		t.Fatalf("metrics=%+v", record)
+	}
+}
+
+func TestTrackedConnUpgradesDirectDestinationAfterHandshake(t *testing.T) {
+	collector := statistics.NewCollector(100)
+	connection := collector.Open(statistics.Dimensions{
+		UserID:        1,
+		DestinationIP: statistics.UnknownDimension,
+		ExactDomain:   "chatgpt.com",
+		Network:       "tcp",
+	}, time.Now())
+	tracked := &trackedConn{
+		detailed: connection,
+		direct:   true,
+	}
+
+	if err := tracked.ConnHandshakeSuccess(&testConn{
+		remote: &net.TCPAddr{IP: net.ParseIP("203.0.113.42"), Port: 443},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	connection.AddDownload(10)
+	connection.Close(time.Now().Add(2 * time.Minute))
+
+	buckets := collector.TakeClosed(time.Now().Add(3 * time.Minute))
+	found := false
+	for _, bucket := range buckets {
+		for _, record := range bucket.Records {
+			if record.DownloadBytes > 0 && record.DestinationIP == "203.0.113.42" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("buckets=%+v", buckets)
+	}
+}
+
+func TestTrackedConnDoesNotExposeProxyDestinationAsTarget(t *testing.T) {
+	collector := statistics.NewCollector(100)
+	connection := collector.Open(statistics.Dimensions{
+		UserID:        1,
+		DestinationIP: statistics.UnknownDimension,
+		ExactDomain:   "chatgpt.com",
+		Network:       "tcp",
+	}, time.Now())
+	tracked := &trackedConn{detailed: connection}
+
+	if err := tracked.ConnHandshakeSuccess(&testConn{
+		remote: &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 1080},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	connection.AddDownload(10)
+	connection.Close(time.Now().Add(2 * time.Minute))
+
+	buckets := collector.TakeClosed(time.Now().Add(3 * time.Minute))
+	for _, bucket := range buckets {
+		for _, record := range bucket.Records {
+			if record.DownloadBytes > 0 && record.DestinationIP != statistics.UnknownDimension {
+				t.Fatalf("destination_ip=%q, want unknown; buckets=%+v", record.DestinationIP, buckets)
+			}
+		}
 	}
 }
 

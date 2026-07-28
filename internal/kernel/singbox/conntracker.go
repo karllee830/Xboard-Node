@@ -4,7 +4,9 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/netip"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -268,6 +270,7 @@ func (t *ConnTracker) RoutedConnection(
 		connID:   connID,
 		sourceIP: sourceIP,
 		detailed: detailedConnection,
+		direct:   outbound != nil && strings.EqualFold(outbound.Type(), "direct"),
 		limiter:  lim,
 		ctx:      ctx,
 	}
@@ -466,7 +469,6 @@ func withPacketDestination(dimensions statistics.Dimensions, destination singM.S
 	}
 	if destination.IsFqdn() {
 		dimensions.ExactDomain = destination.Fqdn
-		dimensions.DestinationIP = statistics.UnknownDimension
 	}
 	if destination.Port > 0 {
 		dimensions.DestinationPort = destination.Port
@@ -642,9 +644,48 @@ type trackedConn struct {
 	connID   string
 	sourceIP string
 	detailed *statistics.Connection
+	direct   bool
 	limiter  *rate.Limiter
 	ctx      context.Context
 	closed   atomic.Bool
+}
+
+// ConnHandshakeSuccess is called by sing-box after the actual outbound
+// connection succeeds. For direct outbound only, RemoteAddr is the target
+// server; proxy outbounds would otherwise report the proxy address.
+func (c *trackedConn) ConnHandshakeSuccess(conn net.Conn) error {
+	if !c.direct || c.detailed == nil || conn == nil {
+		return nil
+	}
+	if address := netipFromAddr(conn.RemoteAddr()); address.IsValid() {
+		c.detailed.SetDestinationIP(address.String())
+	}
+	return nil
+}
+
+func netipFromAddr(address net.Addr) netip.Addr {
+	if address == nil {
+		return netip.Addr{}
+	}
+	switch value := address.(type) {
+	case *net.TCPAddr:
+		if value != nil && value.IP != nil {
+			return netip.MustParseAddr(value.IP.String())
+		}
+	case *net.UDPAddr:
+		if value != nil && value.IP != nil {
+			return netip.MustParseAddr(value.IP.String())
+		}
+	}
+	host, _, err := net.SplitHostPort(address.String())
+	if err != nil {
+		return netip.Addr{}
+	}
+	parsed, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}
+	}
+	return parsed
 }
 
 func (c *trackedConn) Read(b []byte) (int, error) {

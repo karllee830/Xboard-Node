@@ -305,6 +305,20 @@ type Connection struct {
 func (c *Connection) AddUpload(bytes uint64)   { c.upload.Add(bytes) }
 func (c *Connection) AddDownload(bytes uint64) { c.download.Add(bytes) }
 
+// SetDestinationIP upgrades an initially unknown destination after the
+// outbound connection has completed its handshake. The lock also keeps this
+// safe against a concurrent bucket snapshot.
+func (c *Connection) SetDestinationIP(address string) {
+	if address == "" {
+		return
+	}
+	c.mu.Lock()
+	if c.dimensions.DestinationIP == UnknownDimension {
+		c.dimensions.DestinationIP = address
+	}
+	c.mu.Unlock()
+}
+
 func (c *Connection) Close(now time.Time) {
 	if !c.closed.CompareAndSwap(false, true) {
 		return
