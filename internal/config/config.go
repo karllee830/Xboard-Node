@@ -19,14 +19,15 @@ import (
 )
 
 type Config struct {
-	InstanceID string `yaml:"-"`
-	Panel   PanelConfig   `yaml:"panel"`
-	Node    NodeConfig    `yaml:"node"`
-	Kernel  KernelConfig  `yaml:"kernel"`
-	Cert    CertConfig    `yaml:"cert"`
-	Log     LogConfig     `yaml:"log"`
-	Runtime RuntimeConfig `yaml:"runtime"`
-	WS      WSConfig      `yaml:"ws"`
+	InstanceID string           `yaml:"-"`
+	Panel      PanelConfig      `yaml:"panel"`
+	Node       NodeConfig       `yaml:"node"`
+	Kernel     KernelConfig     `yaml:"kernel"`
+	Cert       CertConfig       `yaml:"cert"`
+	Log        LogConfig        `yaml:"log"`
+	Runtime    RuntimeConfig    `yaml:"runtime"`
+	WS         WSConfig         `yaml:"ws"`
+	Statistics StatisticsConfig `yaml:"statistics"`
 	// Standalone enables a local-only node that never contacts the panel.
 	Standalone *StandaloneConfig `yaml:"standalone,omitempty"`
 	// HealthPort enables a lightweight HTTP health-check endpoint on the
@@ -108,6 +109,19 @@ type NodeConfig struct {
 	DeviceReportInterval int `yaml:"device_report_interval"` // sec, default 30
 }
 
+// StatisticsConfig controls the optional detailed Sing-box traffic collector.
+// This path is independent from the billing traffic report.
+type StatisticsConfig struct {
+	Enabled             bool   `yaml:"enabled"`
+	SpoolPath           string `yaml:"spool_path"`
+	MaxHourlyDimensions int    `yaml:"max_hourly_dimensions"`
+	MaxDomainsPerUser   int    `yaml:"max_domains_per_user_hour"`
+	MaxDestIPsPerUser   int    `yaml:"max_destination_ips_per_user_hour"`
+	MaxPendingBatches   int    `yaml:"max_pending_batches"`
+	RequestTimeout      int    `yaml:"request_timeout"` // seconds
+	DisableSniff        bool   `yaml:"disable_sniff"`
+}
+
 // WSConfig holds WebSocket client tuning options.
 type WSConfig struct {
 	StatusInterval    int `yaml:"status_interval"`    // node.status interval (sec), default 10
@@ -142,6 +156,10 @@ type KernelConfig struct {
 	// customization of dns, outbounds, endpoints, route, experimental, etc.
 	// Compatible with V2bX OriginalPath format.
 	CustomConfig string `yaml:"custom_config"`
+
+	// StatisticsSniff is an internal runtime flag populated from Statistics.
+	// It is not accepted as a kernel YAML option.
+	StatisticsSniff bool `yaml:"-"`
 }
 
 type CertConfig struct {
@@ -471,6 +489,30 @@ func (c *Config) inheritFrom(parent *Config) {
 	if c.Node.DeviceReportInterval == 0 {
 		c.Node.DeviceReportInterval = parent.Node.DeviceReportInterval
 	}
+	if !c.Statistics.Enabled {
+		c.Statistics.Enabled = parent.Statistics.Enabled
+	}
+	if c.Statistics.SpoolPath == "" {
+		c.Statistics.SpoolPath = parent.Statistics.SpoolPath
+	}
+	if c.Statistics.MaxHourlyDimensions == 0 {
+		c.Statistics.MaxHourlyDimensions = parent.Statistics.MaxHourlyDimensions
+	}
+	if c.Statistics.MaxPendingBatches == 0 {
+		c.Statistics.MaxPendingBatches = parent.Statistics.MaxPendingBatches
+	}
+	if c.Statistics.MaxDomainsPerUser == 0 {
+		c.Statistics.MaxDomainsPerUser = parent.Statistics.MaxDomainsPerUser
+	}
+	if c.Statistics.MaxDestIPsPerUser == 0 {
+		c.Statistics.MaxDestIPsPerUser = parent.Statistics.MaxDestIPsPerUser
+	}
+	if c.Statistics.RequestTimeout == 0 {
+		c.Statistics.RequestTimeout = parent.Statistics.RequestTimeout
+	}
+	if !c.Statistics.DisableSniff {
+		c.Statistics.DisableSniff = parent.Statistics.DisableSniff
+	}
 	// WS
 	if c.WS.StatusInterval == 0 {
 		c.WS.StatusInterval = parent.WS.StatusInterval
@@ -601,6 +643,21 @@ func (c *Config) setDefaultsFrom(baseDir string) {
 	if c.Node.DeviceReportInterval == 0 {
 		c.Node.DeviceReportInterval = 30
 	}
+	if c.Statistics.MaxHourlyDimensions == 0 {
+		c.Statistics.MaxHourlyDimensions = 200000
+	}
+	if c.Statistics.MaxPendingBatches == 0 {
+		c.Statistics.MaxPendingBatches = 168
+	}
+	if c.Statistics.MaxDomainsPerUser == 0 {
+		c.Statistics.MaxDomainsPerUser = 5000
+	}
+	if c.Statistics.MaxDestIPsPerUser == 0 {
+		c.Statistics.MaxDestIPsPerUser = 10000
+	}
+	if c.Statistics.RequestTimeout == 0 {
+		c.Statistics.RequestTimeout = 30
+	}
 }
 
 func (c *Config) IsMachineMode() bool {
@@ -688,6 +745,9 @@ func normalizeBaseURL(raw string) (string, string, error) {
 }
 
 func (c *Config) validate() error {
+	if c.IsStandalone() && c.Statistics.Enabled {
+		return fmt.Errorf("statistics requires a panel-managed node")
+	}
 	if c.IsStandalone() {
 		if err := c.validateStandalone(); err != nil {
 			return err
@@ -723,6 +783,24 @@ func (c *Config) validate() error {
 	case "singbox", "xray":
 	default:
 		return fmt.Errorf("kernel.type must be 'singbox' or 'xray', got '%s'", c.Kernel.Type)
+	}
+	if c.Statistics.Enabled && c.Kernel.Type != "singbox" {
+		return fmt.Errorf("statistics is currently supported only with kernel.type 'singbox'")
+	}
+	if c.Statistics.MaxHourlyDimensions < 0 {
+		return fmt.Errorf("statistics.max_hourly_dimensions must not be negative")
+	}
+	if c.Statistics.MaxPendingBatches < 0 {
+		return fmt.Errorf("statistics.max_pending_batches must not be negative")
+	}
+	if c.Statistics.MaxDomainsPerUser < 0 {
+		return fmt.Errorf("statistics.max_domains_per_user_hour must not be negative")
+	}
+	if c.Statistics.MaxDestIPsPerUser < 0 {
+		return fmt.Errorf("statistics.max_destination_ips_per_user_hour must not be negative")
+	}
+	if c.Statistics.RequestTimeout < 0 {
+		return fmt.Errorf("statistics.request_timeout must not be negative")
 	}
 	if c.Cert.AutoTLS && c.Cert.Domain == "" {
 		return fmt.Errorf("cert.domain is required when cert.auto_tls is enabled")

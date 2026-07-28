@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/cedar2025/xboard-node/internal/config"
+	"github.com/cedar2025/xboard-node/internal/statistics"
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing/common/buf"
 	singM "github.com/sagernet/sing/common/metadata"
 	"golang.org/x/time/rate"
 )
@@ -36,13 +38,34 @@ func TestSingBoxCapabilities(t *testing.T) {
 	}
 }
 
-
-
 type testConn struct {
 	closed bool
 	reads  [][]byte
 	writes [][]byte
 }
+
+type testPacketConn struct {
+	closed      bool
+	readData    []byte
+	readDest    singM.Socksaddr
+	writtenData []byte
+	writtenDest singM.Socksaddr
+}
+
+func (c *testPacketConn) ReadPacket(buffer *buf.Buffer) (singM.Socksaddr, error) {
+	_, _ = buffer.Write(c.readData)
+	return c.readDest, nil
+}
+func (c *testPacketConn) WritePacket(buffer *buf.Buffer, destination singM.Socksaddr) error {
+	c.writtenData = append([]byte(nil), buffer.Bytes()...)
+	c.writtenDest = destination
+	return nil
+}
+func (c *testPacketConn) Close() error                     { c.closed = true; return nil }
+func (c *testPacketConn) LocalAddr() net.Addr              { return &net.UDPAddr{} }
+func (c *testPacketConn) SetDeadline(time.Time) error      { return nil }
+func (c *testPacketConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *testPacketConn) SetWriteDeadline(time.Time) error { return nil }
 
 func (c *testConn) Read(b []byte) (int, error) {
 	if len(c.reads) == 0 {
@@ -60,11 +83,11 @@ func (c *testConn) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (c *testConn) Close() error { c.closed = true; return nil }
-func (c *testConn) LocalAddr() net.Addr { return &net.TCPAddr{} }
-func (c *testConn) RemoteAddr() net.Addr { return &net.TCPAddr{} }
-func (c *testConn) SetDeadline(time.Time) error { return nil }
-func (c *testConn) SetReadDeadline(time.Time) error { return nil }
+func (c *testConn) Close() error                     { c.closed = true; return nil }
+func (c *testConn) LocalAddr() net.Addr              { return &net.TCPAddr{} }
+func (c *testConn) RemoteAddr() net.Addr             { return &net.TCPAddr{} }
+func (c *testConn) SetDeadline(time.Time) error      { return nil }
+func (c *testConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *testConn) SetWriteDeadline(time.Time) error { return nil }
 
 func testInboundContext(uuid, ip string) adapter.InboundContext {
@@ -113,6 +136,94 @@ func TestConnTrackerRoutedConnectionTracksTrafficAndAliveIPs(t *testing.T) {
 	}
 	if connCount != 0 {
 		t.Fatalf("connCount after close = %d, want 0", connCount)
+	}
+}
+
+func TestConnTrackerCollectsDetailedTCPDimensions(t *testing.T) {
+	collector := statistics.NewCollector(100)
+	tracker := NewConnTracker(0)
+	tracker.SetDetailedCollector(collector)
+	tracker.SetUserMap(map[string]int{"uuid-1": 1})
+	base := &testConn{reads: [][]byte{[]byte("hello")}}
+	metadata := testInboundContext("uuid-1", "198.51.100.7")
+	metadata.Destination = singM.Socksaddr{Addr: netip.MustParseAddr("203.0.113.80"), Port: 443}
+	metadata.Domain = "video.example.com"
+	metadata.Protocol = "tls"
+	metadata.InboundType = "vless"
+
+	wrapped := tracker.RoutedConnection(context.Background(), base, metadata, nil, nil)
+	buffer := make([]byte, 16)
+	if _, err := wrapped.Read(buffer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrapped.Write([]byte("bye")); err != nil {
+		t.Fatal(err)
+	}
+	if err := wrapped.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	hours := collector.TakeClosed(time.Now().UTC().Add(time.Hour))
+	if len(hours) != 1 || len(hours[0].Records) != 1 {
+		t.Fatalf("hours=%+v", hours)
+	}
+	record := hours[0].Records[0]
+	if record.UserID != 1 || record.SourceIP != "198.51.100.7" || record.DestinationIP != "203.0.113.80" {
+		t.Fatalf("identity dimensions=%+v", record)
+	}
+	if record.ExactDomain != "video.example.com" || record.RegistrableDomain != "example.com" || record.ApplicationProtocol != "tls" || record.InboundType != "vless" || record.DestinationPort != 443 {
+		t.Fatalf("route dimensions=%+v", record)
+	}
+	if record.UploadBytes != 5 || record.DownloadBytes != 3 || record.ConnectionCount != 1 {
+		t.Fatalf("metrics=%+v", record)
+	}
+}
+
+func TestConnTrackerCollectsDetailedUDPPerPacketDestination(t *testing.T) {
+	collector := statistics.NewCollector(100)
+	tracker := NewConnTracker(0)
+	tracker.SetDetailedCollector(collector)
+	tracker.SetUserMap(map[string]int{"uuid-1": 1})
+	destination := singM.Socksaddr{Addr: netip.MustParseAddr("203.0.113.90"), Port: 53}
+	base := &testPacketConn{readData: []byte("query"), readDest: destination}
+	metadata := testInboundContext("uuid-1", "198.51.100.8")
+	metadata.InboundType = "vless"
+	metadata.Protocol = "dns"
+
+	wrapped := tracker.RoutedPacketConnection(context.Background(), base, metadata, nil, nil)
+	tracked := wrapped.(*trackedPacketConn)
+	if tracked.ReaderReplaceable() || tracked.WriterReplaceable() {
+		t.Fatal("detailed UDP must keep packet wrappers to retain each destination")
+	}
+	readBuffer := buf.NewPacket()
+	defer readBuffer.Release()
+	if _, err := wrapped.ReadPacket(readBuffer); err != nil {
+		t.Fatal(err)
+	}
+	writeBuffer := buf.As([]byte("answer"))
+	defer writeBuffer.Release()
+	if err := wrapped.WritePacket(writeBuffer, destination); err != nil {
+		t.Fatal(err)
+	}
+	if err := wrapped.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	hours := collector.TakeClosed(time.Now().UTC().Add(time.Hour))
+	var packetRecord *statistics.Record
+	for hourIndex := range hours {
+		for recordIndex := range hours[hourIndex].Records {
+			record := &hours[hourIndex].Records[recordIndex]
+			if record.DestinationIP == "203.0.113.90" && record.DestinationPort == 53 {
+				packetRecord = record
+			}
+		}
+	}
+	if packetRecord == nil || packetRecord.UploadBytes != 5 || packetRecord.DownloadBytes != 6 {
+		t.Fatalf("packet record=%+v", packetRecord)
+	}
+	if packetRecord.Network != "udp" || packetRecord.ApplicationProtocol != "dns" {
+		t.Fatalf("packet dimensions=%+v", packetRecord)
 	}
 }
 

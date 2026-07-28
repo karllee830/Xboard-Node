@@ -16,6 +16,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/cedar2025/xboard-node/internal/statistics"
 )
 
 // ipPool caches ipSnapshot maps to reduce allocations.
@@ -139,6 +140,14 @@ type ConnTracker struct {
 	globalDevices    map[int]map[string]bool // userID → IP → exists
 	globalMu         sync.RWMutex
 	globalLastUpdate time.Time
+
+	detailed *statistics.Collector
+}
+
+func (t *ConnTracker) SetDetailedCollector(collector *statistics.Collector) {
+	t.usersMu.Lock()
+	t.detailed = collector
+	t.usersMu.Unlock()
 }
 
 // NewConnTracker creates a tracker.
@@ -207,7 +216,7 @@ func (t *ConnTracker) ClearGlobalDevices() {
 func (t *ConnTracker) RoutedConnection(
 	ctx context.Context, conn net.Conn,
 	metadata adapter.InboundContext,
-	_ adapter.Rule, _ adapter.Outbound,
+	_ adapter.Rule, outbound adapter.Outbound,
 ) net.Conn {
 	uuid := metadata.User
 	sourceIP := metadata.Source.Addr.String()
@@ -215,6 +224,7 @@ func (t *ConnTracker) RoutedConnection(
 	t.usersMu.RLock()
 	uid := t.uuidMap[uuid]
 	us := t.users[uid]
+	detailed := t.detailed
 	t.usersMu.RUnlock()
 
 	// Device limit gate-keeping
@@ -232,6 +242,10 @@ func (t *ConnTracker) RoutedConnection(
 	// Register connection
 	if us != nil {
 		us.addConn(sourceIP)
+	}
+	var detailedConnection *statistics.Connection
+	if us != nil && detailed != nil {
+		detailedConnection = detailed.Open(detailedDimensions(uid, "tcp", metadata, outbound), time.Now())
 	}
 
 	connID := t.nextID()
@@ -253,6 +267,7 @@ func (t *ConnTracker) RoutedConnection(
 		userID:   uid,
 		connID:   connID,
 		sourceIP: sourceIP,
+		detailed: detailedConnection,
 		limiter:  lim,
 		ctx:      ctx,
 	}
@@ -265,7 +280,7 @@ func (t *ConnTracker) RoutedConnection(
 func (t *ConnTracker) RoutedPacketConnection(
 	ctx context.Context, conn N.PacketConn,
 	metadata adapter.InboundContext,
-	_ adapter.Rule, _ adapter.Outbound,
+	_ adapter.Rule, outbound adapter.Outbound,
 ) N.PacketConn {
 	uuid := metadata.User
 	sourceIP := metadata.Source.Addr.String()
@@ -273,6 +288,7 @@ func (t *ConnTracker) RoutedPacketConnection(
 	t.usersMu.RLock()
 	uid := t.uuidMap[uuid]
 	us := t.users[uid]
+	detailed := t.detailed
 	t.usersMu.RUnlock()
 
 	// Device limit gate-keeping
@@ -290,6 +306,11 @@ func (t *ConnTracker) RoutedPacketConnection(
 	if us != nil {
 		us.addConn(sourceIP)
 	}
+	baseDimensions := detailedDimensions(uid, "udp", metadata, outbound)
+	var detailedConnection *statistics.Connection
+	if us != nil && detailed != nil {
+		detailedConnection = detailed.Open(baseDimensions, time.Now())
+	}
 
 	connID := t.nextID()
 
@@ -299,14 +320,17 @@ func (t *ConnTracker) RoutedPacketConnection(
 	}
 
 	return &trackedPacketConn{
-		PacketConn: conn,
-		tracker:    t,
-		us:         us,
-		userID:     uid,
-		connID:     connID,
-		sourceIP:   sourceIP,
-		limiter:    lim,
-		ctx:        ctx,
+		PacketConn:         conn,
+		tracker:            t,
+		us:                 us,
+		userID:             uid,
+		connID:             connID,
+		sourceIP:           sourceIP,
+		detailed:           detailedConnection,
+		detailedCollector:  detailed,
+		detailedDimensions: baseDimensions,
+		limiter:            lim,
+		ctx:                ctx,
 	}
 }
 
@@ -395,6 +419,59 @@ func (t *ConnTracker) checkDeviceGate(us *userStats, userID int, sourceIP string
 
 func (t *ConnTracker) nextID() string {
 	return "sb-" + formatInt36(t.idCounter.Add(1))
+}
+
+func detailedDimensions(userID int, network string, metadata adapter.InboundContext, outbound adapter.Outbound) statistics.Dimensions {
+	sourceIP := statistics.UnknownDimension
+	if metadata.Source.Addr.IsValid() {
+		sourceIP = metadata.Source.Addr.String()
+	}
+
+	destinationIP := statistics.UnknownDimension
+	if !metadata.FakeIP && metadata.Destination.Addr.IsValid() {
+		destinationIP = metadata.Destination.Addr.String()
+	} else if len(metadata.DestinationAddresses) == 1 && metadata.DestinationAddresses[0].IsValid() {
+		destinationIP = metadata.DestinationAddresses[0].String()
+	}
+
+	domain := metadata.Domain
+	if domain == "" && metadata.Destination.IsFqdn() {
+		domain = metadata.Destination.Fqdn
+	}
+
+	outboundTag := statistics.UnknownDimension
+	outboundType := statistics.UnknownDimension
+	if outbound != nil {
+		outboundTag = outbound.Tag()
+		outboundType = outbound.Type()
+	}
+
+	return statistics.Dimensions{
+		UserID:              userID,
+		SourceIP:            sourceIP,
+		DestinationIP:       destinationIP,
+		ExactDomain:         domain,
+		Network:             network,
+		ApplicationProtocol: metadata.Protocol,
+		InboundType:         metadata.InboundType,
+		OutboundTag:         outboundTag,
+		OutboundType:        outboundType,
+		DestinationPort:     metadata.Destination.Port,
+	}
+}
+
+func withPacketDestination(dimensions statistics.Dimensions, destination singM.Socksaddr) statistics.Dimensions {
+	if destination.Addr.IsValid() {
+		dimensions.DestinationIP = destination.Addr.String()
+	}
+	if destination.IsFqdn() {
+		dimensions.ExactDomain = destination.Fqdn
+		dimensions.DestinationIP = statistics.UnknownDimension
+	}
+	if destination.Port > 0 {
+		dimensions.DestinationPort = destination.Port
+	}
+	return dimensions
 }
 
 func formatInt36(n int64) string {
@@ -564,6 +641,7 @@ type trackedConn struct {
 	userID   int        // user ID for device tracking
 	connID   string
 	sourceIP string
+	detailed *statistics.Connection
 	limiter  *rate.Limiter
 	ctx      context.Context
 	closed   atomic.Bool
@@ -579,6 +657,9 @@ func (c *trackedConn) Read(b []byte) (int, error) {
 	if n > 0 {
 		if c.us != nil {
 			c.us.upload.Add(int64(n)) // 从入站读取 = 用户上传
+		}
+		if c.detailed != nil {
+			c.detailed.AddUpload(uint64(n))
 		}
 		if c.limiter != nil {
 			// Non-blocking rate limiting
@@ -628,6 +709,9 @@ func (c *trackedConn) Write(b []byte) (int, error) {
 	if n > 0 && c.us != nil {
 		c.us.download.Add(int64(n)) // 向入站写入 = 用户下载
 	}
+	if n > 0 && c.detailed != nil {
+		c.detailed.AddDownload(uint64(n))
+	}
 	return n, err
 }
 
@@ -637,18 +721,25 @@ func (c *trackedConn) Close() error {
 			c.us.removeConn(c.sourceIP)
 		}
 		c.tracker.removeConnRef(c.connID)
+		if c.detailed != nil {
+			c.detailed.Close(time.Now())
+		}
 	}
 	return c.Conn.Close()
 }
 
 // makeCountFunc builds a CountFunc for zero-copy byte counting via sing's
 // ReadCounter/WriteCounter unwrap interfaces.
-func (c *trackedConn) makeCountFunc(counter *atomic.Int64) N.CountFunc {
+func (c *trackedConn) makeCountFunc(counter *atomic.Int64, upload bool) N.CountFunc {
 	if c.limiter == nil {
-		return func(n int64) { counter.Add(n) }
+		return func(n int64) {
+			counter.Add(n)
+			c.addDetailed(upload, n)
+		}
 	}
 	return func(n int64) {
 		counter.Add(n)
+		c.addDetailed(upload, n)
 		// Non-blocking rate limiting with context cancellation
 		if !c.limiter.AllowN(time.Now(), int(n)) {
 			resv := c.limiter.ReserveN(time.Now(), int(n))
@@ -666,18 +757,29 @@ func (c *trackedConn) makeCountFunc(counter *atomic.Int64) N.CountFunc {
 	}
 }
 
+func (c *trackedConn) addDetailed(upload bool, bytes int64) {
+	if c.detailed == nil || bytes <= 0 {
+		return
+	}
+	if upload {
+		c.detailed.AddUpload(uint64(bytes))
+	} else {
+		c.detailed.AddDownload(uint64(bytes))
+	}
+}
+
 func (c *trackedConn) UnwrapReader() (io.Reader, []N.CountFunc) {
 	if c.us == nil {
 		return c.Conn, nil
 	}
-	return c.Conn, []N.CountFunc{c.makeCountFunc(&c.us.upload)} // 从入站读取 = 用户上传
+	return c.Conn, []N.CountFunc{c.makeCountFunc(&c.us.upload, true)} // 从入站读取 = 用户上传
 }
 
 func (c *trackedConn) UnwrapWriter() (io.Writer, []N.CountFunc) {
 	if c.us == nil {
 		return c.Conn, nil
 	}
-	return c.Conn, []N.CountFunc{c.makeCountFunc(&c.us.download)} // 向入站写入 = 用户下载
+	return c.Conn, []N.CountFunc{c.makeCountFunc(&c.us.download, false)} // 向入站写入 = 用户下载
 }
 
 func (c *trackedConn) Upstream() any           { return c.Conn }
@@ -688,14 +790,17 @@ func (c *trackedConn) WriterReplaceable() bool { return true }
 
 type trackedPacketConn struct {
 	N.PacketConn
-	tracker  *ConnTracker
-	us       *userStats
-	userID   int
-	connID   string
-	sourceIP string
-	limiter  *rate.Limiter
-	ctx      context.Context
-	closed   atomic.Bool
+	tracker            *ConnTracker
+	us                 *userStats
+	userID             int
+	connID             string
+	sourceIP           string
+	detailed           *statistics.Connection
+	detailedCollector  *statistics.Collector
+	detailedDimensions statistics.Dimensions
+	limiter            *rate.Limiter
+	ctx                context.Context
+	closed             atomic.Bool
 }
 
 func (c *trackedPacketConn) ReadPacket(buffer *buf.Buffer) (singM.Socksaddr, error) {
@@ -704,6 +809,9 @@ func (c *trackedPacketConn) ReadPacket(buffer *buf.Buffer) (singM.Socksaddr, err
 		n := int64(buffer.Len())
 		if c.us != nil {
 			c.us.upload.Add(n) // 从入站读取 = 用户上传
+		}
+		if c.detailedCollector != nil {
+			c.detailedCollector.Record(withPacketDestination(c.detailedDimensions, dest), uint64(n), 0, time.Now())
 		}
 		if c.limiter != nil {
 			// Non-blocking rate limiting with context cancellation
@@ -751,6 +859,9 @@ func (c *trackedPacketConn) WritePacket(buffer *buf.Buffer, dest singM.Socksaddr
 	if err == nil && c.us != nil {
 		c.us.download.Add(n) // 向入站写入 = 用户下载
 	}
+	if err == nil && c.detailedCollector != nil {
+		c.detailedCollector.Record(withPacketDestination(c.detailedDimensions, dest), 0, uint64(n), time.Now())
+	}
 	return err
 }
 
@@ -760,16 +871,23 @@ func (c *trackedPacketConn) Close() error {
 			c.us.removeConn(c.sourceIP)
 		}
 		c.tracker.removeConnRef(c.connID)
+		if c.detailed != nil {
+			c.detailed.Close(time.Now())
+		}
 	}
 	return c.PacketConn.Close()
 }
 
-func (c *trackedPacketConn) makeCountFunc(counter *atomic.Int64) N.CountFunc {
+func (c *trackedPacketConn) makeCountFunc(counter *atomic.Int64, upload bool) N.CountFunc {
 	if c.limiter == nil {
-		return func(n int64) { counter.Add(n) }
+		return func(n int64) {
+			counter.Add(n)
+			c.addDetailed(upload, n)
+		}
 	}
 	return func(n int64) {
 		counter.Add(n)
+		c.addDetailed(upload, n)
 		// Non-blocking rate limiting with context cancellation
 		if !c.limiter.AllowN(time.Now(), int(n)) {
 			resv := c.limiter.ReserveN(time.Now(), int(n))
@@ -787,20 +905,31 @@ func (c *trackedPacketConn) makeCountFunc(counter *atomic.Int64) N.CountFunc {
 	}
 }
 
+func (c *trackedPacketConn) addDetailed(upload bool, bytes int64) {
+	if c.detailed == nil || bytes <= 0 {
+		return
+	}
+	if upload {
+		c.detailed.AddUpload(uint64(bytes))
+	} else {
+		c.detailed.AddDownload(uint64(bytes))
+	}
+}
+
 func (c *trackedPacketConn) UnwrapPacketReader() (N.PacketReader, []N.CountFunc) {
 	if c.us == nil {
 		return c.PacketConn, nil
 	}
-	return c.PacketConn, []N.CountFunc{c.makeCountFunc(&c.us.download)}
+	return c.PacketConn, []N.CountFunc{c.makeCountFunc(&c.us.download, false)}
 }
 
 func (c *trackedPacketConn) UnwrapPacketWriter() (N.PacketWriter, []N.CountFunc) {
 	if c.us == nil {
 		return c.PacketConn, nil
 	}
-	return c.PacketConn, []N.CountFunc{c.makeCountFunc(&c.us.upload)}
+	return c.PacketConn, []N.CountFunc{c.makeCountFunc(&c.us.upload, true)}
 }
 
 func (c *trackedPacketConn) Upstream() any           { return c.PacketConn }
-func (c *trackedPacketConn) ReaderReplaceable() bool { return true }
-func (c *trackedPacketConn) WriterReplaceable() bool { return true }
+func (c *trackedPacketConn) ReaderReplaceable() bool { return c.detailedCollector == nil }
+func (c *trackedPacketConn) WriterReplaceable() bool { return c.detailedCollector == nil }

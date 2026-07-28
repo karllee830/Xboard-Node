@@ -24,3 +24,15 @@
 #       token: "machine-token-2"
 #     log:
 #       level: "debug"   # override for this instance only
+
+# ── Optional detailed traffic statistics (Sing-box only) ──
+# statistics:
+#   enabled: false
+#   # Empty uses <kernel.config_dir>/statistics, isolating each node.
+#   spool_path: ""
+#   max_hourly_dimensions: 200000
+#   max_domains_per_user_hour: 5000
+#   max_destination_ips_per_user_hour: 10000
+#   max_pending_batches: 168
+#   request_timeout: 30
+#   disable_sniff: false

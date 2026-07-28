@@ -611,7 +611,7 @@ func TestBuildConfig_AllProtocols_ValidJSON(t *testing.T) {
 // --- Routes ---
 
 func TestBuildRoutes_Default(t *testing.T) {
-	route := buildRoutes(nil, nil, nil)
+	route := buildRoutes(nil, nil, nil, false)
 	assertMapValue(t, route, "final", "direct")
 
 	rules := route["rules"].([]M)
@@ -622,13 +622,27 @@ func TestBuildRoutes_Default(t *testing.T) {
 	assertMapValue(t, rules[1], "outbound", "block")
 }
 
+func TestBuildRoutes_StatisticsSniffComesFirst(t *testing.T) {
+	route := buildRoutes(nil, nil, nil, true)
+	rules, ok := route["rules"].([]M)
+	if !ok || len(rules) == 0 {
+		t.Fatalf("rules=%T %#v", route["rules"], route["rules"])
+	}
+	if rules[0]["action"] != "sniff" || rules[0]["timeout"] != "300ms" {
+		t.Fatalf("first rule=%#v", rules[0])
+	}
+	if _, hasOverride := rules[0]["override_destination"]; hasOverride {
+		t.Fatal("statistics sniff must preserve the original destination IP")
+	}
+}
+
 func TestBuildRoutes_WithCustomRules(t *testing.T) {
 	rules := []panel.RouteRule{
 		{ID: 1, Match: []string{"blocked.com"}, Action: "block"},
 		{ID: 2, Match: []string{"10.0.0.0/8"}, Action: "block"},
 		{ID: 3, Match: []string{"allowed.com"}, Action: "direct"},
 	}
-	route := buildRoutes(testRouteRules(rules), nil, nil)
+	route := buildRoutes(testRouteRules(rules), nil, nil, false)
 	allRules := route["rules"].([]M)
 
 	if len(allRules) != 5 {
@@ -653,7 +667,7 @@ func TestBuildRoutes_MultiMatch(t *testing.T) {
 		{ID: 1, Match: []string{"*.evil.com", "bad.org", "192.168.1.0/24"}, Action: "block"},
 		{ID: 2, Match: []string{"*.bypass.com"}, Action: "direct"},
 	}
-	route := buildRoutes(testRouteRules(rules), nil, nil)
+	route := buildRoutes(testRouteRules(rules), nil, nil, false)
 	allRules := route["rules"].([]M)
 
 	// 2 default private-IP rules + 1 domain rule + 1 CIDR rule + 1 domain rule = 5
@@ -699,7 +713,7 @@ func TestBuildRoutes_WithCustomRouteRules(t *testing.T) {
 			Action: model.RouteAction{Type: "direct"},
 		},
 	}
-	route := buildRoutes(nil, customRules, nil)
+	route := buildRoutes(nil, customRules, nil, false)
 	allRules := route["rules"].([]M)
 	if len(allRules) != 9 {
 		t.Fatalf("rules count: got %d, want 9", len(allRules))
@@ -733,7 +747,7 @@ func TestBuildRoutes_StructuredCustomRulesRemainFirst(t *testing.T) {
 		Match:  model.RouteMatch{DomainSuffixes: []string{"structured.example"}},
 		Action: model.RouteAction{Type: "direct"},
 	}}
-	route := buildRoutes(nil, custom, raw)
+	route := buildRoutes(nil, custom, raw, false)
 	allRules := route["rules"].([]M)
 	if allRules[0]["outbound"] != "direct" {
 		t.Fatalf("expected structured route first, got %v", allRules[0]["outbound"])

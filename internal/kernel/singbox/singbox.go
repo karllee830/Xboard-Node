@@ -22,6 +22,7 @@ import (
 	"github.com/cedar2025/xboard-node/internal/kernel"
 	"github.com/cedar2025/xboard-node/internal/model"
 	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/cedar2025/xboard-node/internal/statistics"
 )
 
 // drainTimeout is how long stop() waits for in-flight connections to finish
@@ -57,6 +58,9 @@ type SingBox struct {
 	// deviceLimitFunc resolves a user UUID to (limit, hasLimit) for gate-keeping.
 	// Set once by SetDeviceLimitFunc and forwarded to every new ConnTracker.
 	deviceLimitFunc func(string) (int, bool)
+
+	// detailedCollector is owned by the service and survives kernel reloads.
+	detailedCollector *statistics.Collector
 
 	// trackerRegistered prevents duplicate AppendTracker calls on the same
 	// Router instance during Reload. Reset to false on full restart.
@@ -141,6 +145,7 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 
 	// Fresh tracker on full restart.
 	s.connTracker = NewConnTracker(0)
+	s.connTracker.SetDetailedCollector(s.detailedCollector)
 	s.connTracker.SetUserMap(buildUserMap(users))
 	if s.speedLimitFunc != nil {
 		s.connTracker.SetSpeedLimitFunc(s.speedLimitFunc)
@@ -159,6 +164,17 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 
 	nlog.Core().Debug("sing-box started", "users", len(users))
 	return nil
+}
+
+// SetDetailedTrafficCollector attaches the optional multi-dimensional
+// collector. It is configured before Start and forwarded to future trackers.
+func (s *SingBox) SetDetailedTrafficCollector(collector *statistics.Collector) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.detailedCollector = collector
+	if s.connTracker != nil {
+		s.connTracker.SetDetailedCollector(collector)
+	}
 }
 
 // recycleOldBox gracefully shuts down a previous sing-box instance in the

@@ -327,7 +327,6 @@ kernel:
 	}
 }
 
-
 func TestLoadRoot_LegacyConfigNormalizesToSingleInstance(t *testing.T) {
 	path := writeTemp(t, `
 panel:
@@ -541,5 +540,29 @@ func TestInheritFrom_AutoTLSInheritedWhenChildHasNoCertConfig(t *testing.T) {
 	child.inheritFrom(parent)
 	if !child.Cert.AutoTLS {
 		t.Error("auto_tls should be inherited when child has no cert config")
+	}
+}
+
+func TestStatisticsDefaultsAndInheritance(t *testing.T) {
+	parent := &Config{Statistics: StatisticsConfig{Enabled: true, MaxHourlyDimensions: 1234, MaxPendingBatches: 24}}
+	child := &Config{}
+	child.inheritFrom(parent)
+	child.setDefaultsFrom(t.TempDir())
+	if !child.Statistics.Enabled || child.Statistics.MaxHourlyDimensions != 1234 || child.Statistics.MaxPendingBatches != 24 {
+		t.Fatalf("statistics=%+v", child.Statistics)
+	}
+	if child.Statistics.RequestTimeout != 30 {
+		t.Fatalf("request_timeout=%d, want 30", child.Statistics.RequestTimeout)
+	}
+}
+
+func TestStatisticsRejectsXrayKernel(t *testing.T) {
+	cfg := &Config{
+		Panel:      PanelConfig{URL: "https://panel.example.com", Token: "token", NodeID: 1},
+		Kernel:     KernelConfig{Type: "xray"},
+		Statistics: StatisticsConfig{Enabled: true},
+	}
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected detailed statistics to reject xray")
 	}
 }

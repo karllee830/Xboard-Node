@@ -25,18 +25,21 @@ import (
 	"github.com/cedar2025/xboard-node/internal/model"
 	"github.com/cedar2025/xboard-node/internal/monitor"
 	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/cedar2025/xboard-node/internal/statistics"
 	"github.com/cedar2025/xboard-node/internal/tracker"
 )
 
 type Service struct {
-	cfg          *config.Config
-	source       controlplane.Source
-	sink         controlplane.Sink
-	kernel       kernel.Kernel
-	tracker      *tracker.Tracker
-	limiter      *limiter.Limiter
-	speedTracker *limiter.SpeedTracker
-	cert         *cert.Manager
+	cfg                 *config.Config
+	source              controlplane.Source
+	sink                controlplane.Sink
+	kernel              kernel.Kernel
+	tracker             *tracker.Tracker
+	limiter             *limiter.Limiter
+	speedTracker        *limiter.SpeedTracker
+	cert                *cert.Manager
+	statisticsCollector *statistics.Collector
+	statisticsManager   *statistics.Manager
 
 	lastConfig *model.NodeSpec
 	lastUsers  []model.UserSpec
@@ -138,6 +141,9 @@ func NewWithControlPlane(cfg *config.Config, cp controlplane.ControlPlane) *Serv
 
 func newService(cfg *config.Config, cp controlplane.ControlPlane) *Service {
 	certMgr := cert.NewManager(cfg.Cert)
+	if cfg.Statistics.Enabled {
+		cfg.Kernel.StatisticsSniff = !cfg.Statistics.DisableSniff
+	}
 
 	var k kernel.Kernel
 	switch cfg.Kernel.Type {
@@ -153,22 +159,46 @@ func newService(cfg *config.Config, cp controlplane.ControlPlane) *Service {
 	l := limiter.New()
 	st := limiter.NewSpeedTracker(l)
 
+	var statisticsCollector *statistics.Collector
+	var statisticsManager *statistics.Manager
+	if cfg.Statistics.Enabled {
+		statisticsCollector = statistics.NewCollector(
+			cfg.Statistics.MaxHourlyDimensions,
+			cfg.Statistics.MaxDomainsPerUser,
+			cfg.Statistics.MaxDestIPsPerUser,
+		)
+		if configurable, ok := k.(interface {
+			SetDetailedTrafficCollector(*statistics.Collector)
+		}); ok {
+			configurable.SetDetailedTrafficCollector(statisticsCollector)
+		}
+		statisticsManager = statistics.NewManager(statisticsCollector, cfg.Panel, cfg.Statistics, cfg.Kernel.ConfigDir)
+	}
+
 	return &Service{
-		cfg:          cfg,
-		source:       cp,
-		sink:         cp,
-		kernel:       k,
-		tracker:      tracker.New(),
-		limiter:      l,
-		speedTracker: st,
-		cert:         certMgr,
-		wsEvents:     make(chan controlplane.Event, 16),
-		wsStatusCh:   make(chan controlplane.StatusChange, 4),
-		pullResults:  make(chan pullResult, 1),
+		cfg:                 cfg,
+		source:              cp,
+		sink:                cp,
+		kernel:              k,
+		tracker:             tracker.New(),
+		limiter:             l,
+		speedTracker:        st,
+		cert:                certMgr,
+		statisticsCollector: statisticsCollector,
+		statisticsManager:   statisticsManager,
+		wsEvents:            make(chan controlplane.Event, 16),
+		wsStatusCh:          make(chan controlplane.StatusChange, 4),
+		pullResults:         make(chan pullResult, 1),
 	}
 }
 
 func (s *Service) Run(ctx context.Context) error {
+	if s.statisticsManager != nil {
+		if err := s.statisticsManager.Start(ctx); err != nil {
+			return fmt.Errorf("statistics manager: %w", err)
+		}
+		defer s.statisticsManager.Close()
+	}
 	// Start cert manager (handles auto-TLS or manual cert verification)
 	if err := s.cert.Start(ctx); err != nil {
 		return fmt.Errorf("cert manager: %w", err)
@@ -939,6 +969,9 @@ func (s *Service) applyChanges(ctx context.Context, configChanged, usersChanged 
 func (s *Service) trackAndEnforce(ctx context.Context) {
 	if !s.kernel.IsRunning() {
 		return
+	}
+	if s.statisticsCollector != nil {
+		s.statisticsCollector.Snapshot(time.Now())
 	}
 
 	traffic, aliveIPs, connCount, err := s.kernel.GetUserTraffic(ctx)

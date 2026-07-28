@@ -41,6 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/cedar2025/xboard-node/dev/install.s
 # Machine mode
 curl -fsSL https://raw.githubusercontent.com/cedar2025/xboard-node/dev/install.sh | \
   sudo bash -s -- --mode machine --panel https://panel.example.com --token TOKEN --machine-id 1
+```
 
 ## xbctl
 
@@ -58,6 +59,24 @@ xbctl service restart
 ## Configuration
 
 Legacy single-panel config is fully compatible. Appending bindings auto-migrates to `instances` format. See `config.yml.example`.
+
+### Detailed traffic statistics (Sing-box only)
+
+The optional collector reports hourly multidimensional aggregates to the Xboard Statistics plugin without changing the billing report path:
+
+```yaml
+statistics:
+  enabled: true
+  spool_path: /etc/Xboard-Node/statistics
+  max_hourly_dimensions: 200000
+  max_domains_per_user_hour: 5000
+  max_destination_ips_per_user_hour: 10000
+  max_pending_batches: 168
+  request_timeout: 30
+  disable_sniff: false
+```
+
+It records user/node association, source and reliable destination IP, normalized domain, TCP/UDP, sniffed application protocol, inbound/outbound and destination port. It never records User-Agent, URL paths, headers, cookies or payload contents. Pending gzip batches are persisted atomically and retried with exponential backoff.
 
 ## Extensions
 
