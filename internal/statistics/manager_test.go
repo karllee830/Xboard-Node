@@ -80,19 +80,90 @@ func TestManagerUploadsGzipBatchWithAuthAndChecksum(t *testing.T) {
 	if requests != 1 {
 		t.Fatalf("requests=%d, want 1", requests)
 	}
-	if received.SchemaVersion != 1 || len(received.Records) != 1 {
+	if received.SchemaVersion != 2 || len(received.Records) != 1 {
 		t.Fatalf("envelope=%+v", received)
+	}
+	bucketStart, err := time.Parse(time.RFC3339, received.BucketStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bucketEnd, err := time.Parse(time.RFC3339, received.BucketEnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bucketEnd.Sub(bucketStart) != time.Minute || bucketStart.Second() != 0 {
+		t.Fatalf("bucket=%s..%s, want one UTC minute", received.BucketStart, received.BucketEnd)
 	}
 	if received.Records[0].UploadBytes != 12 || received.Records[0].DownloadBytes != 34 {
 		t.Fatalf("record=%+v", received.Records[0])
 	}
 }
 
-func TestManagerPersistsAndRestoresCurrentHour(t *testing.T) {
-	spool := t.TempDir()
-	now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
+func TestManagerUploadsEachClosedMinuteWithoutDoubleCounting(t *testing.T) {
+	var received []reportEnvelope
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		reader, err := gzip.NewReader(request.Body)
+		if err != nil {
+			t.Errorf("gzip reader: %v", err)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		defer reader.Close()
+		var envelope reportEnvelope
+		if err := json.NewDecoder(reader).Decode(&envelope); err != nil {
+			t.Errorf("decode envelope: %v", err)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		received = append(received, envelope)
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	start := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Minute)
 	collector := NewCollector(100)
-	connection := collector.Open(testDimensions(), now.Add(-time.Minute))
+	connection := collector.Open(testDimensions(), start.Add(10*time.Second))
+	connection.AddUpload(60)
+
+	spool := t.TempDir()
+	manager := NewManager(collector, config.PanelConfig{URL: server.URL, NodeID: 9}, config.StatisticsConfig{
+		MaxPendingBatches: 10,
+		RequestTimeout:    2,
+		SpoolPath:         spool,
+	}, spool)
+	if err := os.MkdirAll(manager.pendingPath(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(manager.rejectedPath(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Checkpoint(start.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	connection.AddUpload(120)
+	if err := manager.Checkpoint(start.Add(2 * time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(received) != 2 {
+		t.Fatalf("requests=%d, want one report for each closed minute", len(received))
+	}
+	if received[0].BucketStart != start.Format(time.RFC3339) ||
+		received[1].BucketStart != start.Add(time.Minute).Format(time.RFC3339) {
+		t.Fatalf("bucket starts=%q,%q", received[0].BucketStart, received[1].BucketStart)
+	}
+	if len(received[0].Records) != 1 || len(received[1].Records) != 1 ||
+		received[0].Records[0].UploadBytes != 60 || received[1].Records[0].UploadBytes != 120 {
+		t.Fatalf("minute records=%+v %+v", received[0].Records, received[1].Records)
+	}
+}
+
+func TestManagerPersistsAndRestoresCurrentMinute(t *testing.T) {
+	spool := t.TempDir()
+	now := time.Now().UTC().Truncate(time.Minute).Add(10 * time.Second)
+	collector := NewCollector(100)
+	connection := collector.Open(testDimensions(), now.Add(-5*time.Second))
 	connection.AddUpload(77)
 	connection.Close(now)
 
@@ -115,12 +186,58 @@ func TestManagerPersistsAndRestoresCurrentHour(t *testing.T) {
 	if err := restoredManager.loadCurrent(); err != nil {
 		t.Fatal(err)
 	}
-	hours := restored.CurrentHours(now)
-	if len(hours) != 1 || len(hours[0].Records) != 1 || hours[0].Records[0].UploadBytes != 77 {
-		t.Fatalf("restored hours=%+v", hours)
+	buckets := restored.CurrentBuckets(now)
+	if len(buckets) != 1 || len(buckets[0].Records) != 1 || buckets[0].Records[0].UploadBytes != 77 {
+		t.Fatalf("restored buckets=%+v", buckets)
 	}
 	if _, err := filepath.Glob(filepath.Join(spool, "current.json")); err != nil {
 		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(spool, "current.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state persistedState
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Version != collectorStateVersion || len(state.Buckets) != 1 || len(state.Hours) != 0 {
+		t.Fatalf("state=%+v, want v2 minute buckets", state)
+	}
+}
+
+func TestManagerRestoresLegacyCurrentHourState(t *testing.T) {
+	spool := t.TempDir()
+	start := time.Now().UTC().Truncate(time.Hour)
+	legacy := persistedState{Version: 1, Hours: []Bucket{{
+		Start: start,
+		Records: []Record{{
+			UserID: 1, SourceIP: UnknownDimension, DestinationIP: UnknownDimension,
+			ExactDomain: UnknownDimension, RegistrableDomain: UnknownDimension,
+			Network: "tcp", ApplicationProtocol: UnknownDimension, InboundType: "vless",
+			OutboundTag: "direct", OutboundType: "direct", DownloadBytes: 55,
+		}},
+	}}}
+	body, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spool, "current.json"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	collector := NewCollector(100)
+	manager := NewManager(collector, config.PanelConfig{NodeID: 1}, config.StatisticsConfig{
+		MaxPendingBatches: 10,
+		RequestTimeout:    1,
+		SpoolPath:         spool,
+	}, spool)
+	if err := manager.loadCurrent(); err != nil {
+		t.Fatal(err)
+	}
+	buckets := collector.CurrentBuckets(start.Add(30 * time.Second))
+	if len(buckets) != 1 || len(buckets[0].Records) != 1 || buckets[0].Records[0].DownloadBytes != 55 {
+		t.Fatalf("restored legacy buckets=%+v", buckets)
 	}
 }
 
@@ -156,7 +273,7 @@ func TestManagerBacksOffAfterTransientFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Hour)
-	if err := manager.enqueue(Hour{Start: start, Records: []Record{{
+	if err := manager.enqueue(Bucket{Start: start, Records: []Record{{
 		UserID: 1, SourceIP: UnknownDimension, DestinationIP: UnknownDimension,
 		ExactDomain: UnknownDimension, RegistrableDomain: UnknownDimension,
 		Network: "tcp", ApplicationProtocol: UnknownDimension, InboundType: "vless",
@@ -204,5 +321,14 @@ func TestReportStatusClassificationKeepsMissingPluginBatchPending(t *testing.T) 
 	}
 	if !isPermanentReportStatus(http.StatusUnprocessableEntity) {
 		t.Fatal("invalid protocol payload should be rejected permanently")
+	}
+	for _, code := range []string{"invalid_schema_version", "unsupported_schema_version"} {
+		body := []byte(`{"status":"fail","error":{"code":"` + code + `"}}`)
+		if isPermanentReportResponse(http.StatusUnprocessableEntity, body) {
+			t.Fatalf("%s should remain pending until the panel plugin is upgraded", code)
+		}
+	}
+	if !isPermanentReportResponse(http.StatusUnprocessableEntity, []byte(`{"error":{"code":"invalid_record"}}`)) {
+		t.Fatal("other 422 responses should remain permanently rejected")
 	}
 }

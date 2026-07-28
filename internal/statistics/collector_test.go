@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-func TestCollectorAggregatesAndClosesIdempotently(t *testing.T) {
+func TestCollectorAggregatesAndClosesMinuteIdempotently(t *testing.T) {
 	collector := NewCollector(100)
 	start := time.Date(2026, 7, 28, 10, 15, 0, 0, time.UTC)
 	dimensions := testDimensions()
@@ -16,16 +16,16 @@ func TestCollectorAggregatesAndClosesIdempotently(t *testing.T) {
 	first.Close(start.Add(20 * time.Second))
 	first.Close(start.Add(30 * time.Second))
 
-	second := collector.Open(dimensions, start.Add(time.Minute))
+	second := collector.Open(dimensions, start.Add(30*time.Second))
 	second.AddUpload(50)
 	second.AddDownload(450)
-	second.Close(start.Add(time.Minute + 10*time.Second))
+	second.Close(start.Add(40 * time.Second))
 
-	hours := collector.TakeClosed(start.Add(time.Hour))
-	if len(hours) != 1 || len(hours[0].Records) != 1 {
-		t.Fatalf("hours=%+v, want one hour with one record", hours)
+	buckets := collector.TakeClosed(start.Add(time.Minute))
+	if len(buckets) != 1 || len(buckets[0].Records) != 1 {
+		t.Fatalf("buckets=%+v, want one minute with one record", buckets)
 	}
-	record := hours[0].Records[0]
+	record := buckets[0].Records[0]
 	if record.UploadBytes != 150 || record.DownloadBytes != 1350 {
 		t.Fatalf("bytes=(%d,%d), want (150,1350)", record.UploadBytes, record.DownloadBytes)
 	}
@@ -37,7 +37,7 @@ func TestCollectorAggregatesAndClosesIdempotently(t *testing.T) {
 	}
 }
 
-func TestCollectorSplitsLongConnectionAcrossHoursWithoutLosingBytes(t *testing.T) {
+func TestCollectorSplitsLongConnectionAcrossMinutesWithoutLosingBytes(t *testing.T) {
 	collector := NewCollector(100)
 	start := time.Date(2026, 7, 28, 10, 59, 30, 0, time.UTC)
 	connection := collector.Open(testDimensions(), start)
@@ -45,24 +45,24 @@ func TestCollectorSplitsLongConnectionAcrossHoursWithoutLosingBytes(t *testing.T
 	connection.AddDownload(1001)
 	connection.Close(start.Add(time.Minute))
 
-	hours := collector.TakeClosed(time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC))
-	if len(hours) != 2 {
-		t.Fatalf("len(hours)=%d, want 2", len(hours))
+	buckets := collector.TakeClosed(time.Date(2026, 7, 28, 11, 1, 0, 0, time.UTC))
+	if len(buckets) != 2 {
+		t.Fatalf("len(buckets)=%d, want 2", len(buckets))
 	}
 	var upload, download, active uint64
-	for _, hour := range hours {
-		if len(hour.Records) != 1 {
-			t.Fatalf("records=%d, want 1", len(hour.Records))
+	for _, bucket := range buckets {
+		if len(bucket.Records) != 1 {
+			t.Fatalf("records=%d, want 1", len(bucket.Records))
 		}
-		upload += hour.Records[0].UploadBytes
-		download += hour.Records[0].DownloadBytes
-		active += hour.Records[0].ActiveSeconds
+		upload += bucket.Records[0].UploadBytes
+		download += bucket.Records[0].DownloadBytes
+		active += bucket.Records[0].ActiveSeconds
 	}
 	if upload != 101 || download != 1001 || active != 60 {
 		t.Fatalf("totals=(%d,%d,%d), want (101,1001,60)", upload, download, active)
 	}
-	if hours[0].Records[0].ConnectionCount != 1 || hours[1].Records[0].ConnectionCount != 0 {
-		t.Fatalf("connection count must belong only to opening hour")
+	if buckets[0].Records[0].ConnectionCount != 1 || buckets[1].Records[0].ConnectionCount != 0 {
+		t.Fatalf("connection count must belong only to opening minute")
 	}
 }
 
@@ -82,21 +82,21 @@ func TestCollectorCollapsesNewHighCardinalityDimensions(t *testing.T) {
 	second.AddDownload(200)
 	second.Close(start.Add(3 * time.Second))
 
-	hour := collector.TakeClosed(start.Add(time.Hour))[0]
-	if len(hour.Records) != 2 {
-		t.Fatalf("records=%d, want original plus collapsed", len(hour.Records))
+	bucket := collector.TakeClosed(start.Add(time.Minute))[0]
+	if len(bucket.Records) != 2 {
+		t.Fatalf("records=%d, want original plus collapsed", len(bucket.Records))
 	}
 	var collapsed *Record
-	for index := range hour.Records {
-		if hour.Records[index].SourceIP == OtherDimension {
-			collapsed = &hour.Records[index]
+	for index := range bucket.Records {
+		if bucket.Records[index].SourceIP == OtherDimension {
+			collapsed = &bucket.Records[index]
 		}
 	}
 	if collapsed == nil || collapsed.DestinationIP != OtherDimension || collapsed.ExactDomain != OtherDimension || collapsed.DestinationPort != 0 {
 		t.Fatalf("collapsed record=%+v", collapsed)
 	}
-	if hour.Quality.CollapsedBytes != 200 || hour.Quality.CollapsedDimensions == 0 {
-		t.Fatalf("quality=%+v", hour.Quality)
+	if bucket.Quality.CollapsedBytes != 200 || bucket.Quality.CollapsedDimensions == 0 {
+		t.Fatalf("quality=%+v", bucket.Quality)
 	}
 }
 
@@ -111,21 +111,21 @@ func TestCollectorCapsDomainsAndDestinationIPsPerUser(t *testing.T) {
 	second.DestinationIP = "203.0.113.81"
 	collector.Record(second, 20, 0, start)
 
-	hours := collector.TakeClosed(start.Add(time.Hour))
-	if len(hours) != 1 || len(hours[0].Records) != 2 {
-		t.Fatalf("hours=%+v", hours)
+	buckets := collector.TakeClosed(start.Add(time.Minute))
+	if len(buckets) != 1 || len(buckets[0].Records) != 2 {
+		t.Fatalf("buckets=%+v", buckets)
 	}
 	var collapsed *Record
-	for index := range hours[0].Records {
-		if hours[0].Records[index].ExactDomain == OtherDimension {
-			collapsed = &hours[0].Records[index]
+	for index := range buckets[0].Records {
+		if buckets[0].Records[index].ExactDomain == OtherDimension {
+			collapsed = &buckets[0].Records[index]
 		}
 	}
 	if collapsed == nil || collapsed.DestinationIP != OtherDimension || collapsed.UploadBytes != 20 {
 		t.Fatalf("collapsed=%+v", collapsed)
 	}
-	if hours[0].Quality.CollapsedBytes != 20 || hours[0].Quality.CollapsedDimensions != 1 {
-		t.Fatalf("quality=%+v", hours[0].Quality)
+	if buckets[0].Quality.CollapsedBytes != 20 || buckets[0].Quality.CollapsedDimensions != 1 {
+		t.Fatalf("quality=%+v", buckets[0].Quality)
 	}
 }
 

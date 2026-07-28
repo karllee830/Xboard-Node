@@ -30,9 +30,11 @@
 #   enabled: true
 #   # Empty uses <kernel.config_dir>/statistics, isolating each node.
 #   spool_path: ""
+#   # Legacy key names are retained for compatibility; limits apply per minute batch.
 #   max_hourly_dimensions: 200000
 #   max_domains_per_user_hour: 5000
 #   max_destination_ips_per_user_hour: 10000
-#   max_pending_batches: 168
+#   # 10,080 minute batches retain roughly seven days of retry capacity.
+#   max_pending_batches: 10080
 #   request_timeout: 30
 #   disable_sniff: false

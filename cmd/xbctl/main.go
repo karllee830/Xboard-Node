@@ -884,7 +884,7 @@ func configureDetailedStatistics(value *config.StatisticsConfig, enabled bool) {
 		value.MaxDestIPsPerUser = 10000
 	}
 	if value.MaxPendingBatches == 0 {
-		value.MaxPendingBatches = 168
+		value.MaxPendingBatches = 10080
 	}
 	if value.RequestTimeout == 0 {
 		value.RequestTimeout = 30

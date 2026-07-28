@@ -44,7 +44,7 @@ func TestConfigInitEnablesDetailedStatisticsForMachine(t *testing.T) {
 	if instance.Statistics.MaxHourlyDimensions != 200000 ||
 		instance.Statistics.MaxDomainsPerUser != 5000 ||
 		instance.Statistics.MaxDestIPsPerUser != 10000 ||
-		instance.Statistics.MaxPendingBatches != 168 ||
+		instance.Statistics.MaxPendingBatches != 10080 ||
 		instance.Statistics.RequestTimeout != 30 {
 		t.Fatalf("unexpected statistics defaults: %+v", instance.Statistics)
 	}

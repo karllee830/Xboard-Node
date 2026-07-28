@@ -25,7 +25,11 @@ import (
 	"github.com/karllee830/Xboard-Node/internal/nlog"
 )
 
-const reportPath = "/api/v2/server/statistics/report"
+const (
+	reportPath            = "/api/v2/server/statistics/report"
+	collectorStateVersion = 2
+	reportSchemaVersion   = 2
+)
 
 type reportEnvelope struct {
 	SchemaVersion    int      `json:"schema_version"`
@@ -39,11 +43,12 @@ type reportEnvelope struct {
 }
 
 type persistedState struct {
-	Version int    `json:"version"`
-	Hours   []Hour `json:"hours"`
+	Version int      `json:"version"`
+	Buckets []Bucket `json:"buckets,omitempty"`
+	Hours   []Bucket `json:"hours,omitempty"`
 }
 
-// Manager persists collector snapshots and uploads immutable gzip batches.
+// Manager persists collector snapshots and uploads immutable minute batches.
 type Manager struct {
 	collector *Collector
 	panel     config.PanelConfig
@@ -136,9 +141,9 @@ func (m *Manager) checkpointAndUpload(ctx context.Context, now time.Time) error 
 	defer m.mu.Unlock()
 
 	var joined error
-	for _, hour := range m.collector.TakeClosed(now) {
-		if err := m.enqueue(hour); err != nil {
-			m.collector.Restore([]Hour{hour})
+	for _, bucket := range m.collector.TakeClosed(now) {
+		if err := m.enqueue(bucket); err != nil {
+			m.collector.Restore([]Bucket{bucket})
 			joined = errors.Join(joined, err)
 		}
 	}
@@ -151,9 +156,9 @@ func (m *Manager) checkpointAndUpload(ctx context.Context, now time.Time) error 
 	return joined
 }
 
-func (m *Manager) enqueue(hour Hour) error {
-	batchID := deterministicBatchID(m.panel.NodeID, hour.Start)
-	name := hour.Start.UTC().Format("20060102T150405Z") + "_" + batchID + ".json.gz"
+func (m *Manager) enqueue(bucket Bucket) error {
+	batchID := deterministicBatchID(m.panel.NodeID, bucket.Start)
+	name := bucket.Start.UTC().Format("20060102T150405Z") + "_" + batchID + ".json.gz"
 	path := filepath.Join(m.pendingPath(), name)
 	if _, err := os.Stat(path); err == nil {
 		return nil
@@ -170,13 +175,13 @@ func (m *Manager) enqueue(hour Hour) error {
 	}
 
 	envelope := reportEnvelope{
-		SchemaVersion:    1,
+		SchemaVersion:    reportSchemaVersion,
 		BatchID:          batchID,
-		BucketStart:      hour.Start.UTC().Format(time.RFC3339),
-		BucketEnd:        hour.Start.UTC().Add(time.Hour).Format(time.RFC3339),
-		CollectorVersion: "0.1.0",
-		Records:          hour.Records,
-		Quality:          hour.Quality,
+		BucketStart:      bucket.Start.UTC().Format(time.RFC3339),
+		BucketEnd:        bucket.Start.UTC().Add(time.Minute).Format(time.RFC3339),
+		CollectorVersion: "0.2.0",
+		Records:          bucket.Records,
+		Quality:          bucket.Quality,
 	}
 	body, err := json.Marshal(envelope)
 	if err != nil {
@@ -256,8 +261,25 @@ func (m *Manager) upload(ctx context.Context, path string, pendingBatches int) (
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return false, nil
 	}
-	permanent := isPermanentReportStatus(resp.StatusCode)
+	permanent := isPermanentReportResponse(resp.StatusCode, responseBody)
 	return permanent, fmt.Errorf("statistics report status %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
+}
+
+func isPermanentReportResponse(status int, body []byte) bool {
+	if status == http.StatusUnprocessableEntity {
+		var response struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(body, &response) == nil &&
+			(response.Error.Code == "invalid_schema_version" || response.Error.Code == "unsupported_schema_version") {
+			// Keep schema v2 batches pending when a node is upgraded before the
+			// matching panel plugin. They become uploadable after the panel update.
+			return false
+		}
+	}
+	return isPermanentReportStatus(status)
 }
 
 func isPermanentReportStatus(status int) bool {
@@ -265,7 +287,7 @@ func isPermanentReportStatus(status int) bool {
 }
 
 func (m *Manager) saveCurrent(now time.Time) error {
-	state := persistedState{Version: 1, Hours: m.collector.CurrentHours(now)}
+	state := persistedState{Version: collectorStateVersion, Buckets: m.collector.CurrentBuckets(now)}
 	body, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -286,10 +308,17 @@ func (m *Manager) loadCurrent() error {
 	if err := json.Unmarshal(body, &state); err != nil {
 		return fmt.Errorf("decode statistics current state: %w", err)
 	}
-	if state.Version != 1 {
+	switch state.Version {
+	case 1:
+		// Version 1 stored the unfinished UTC hour under "hours". Restoring it
+		// as one migration bucket preserves all counters without resending data
+		// that was already accepted by the panel.
+		m.collector.Restore(state.Hours)
+	case collectorStateVersion:
+		m.collector.Restore(state.Buckets)
+	default:
 		return fmt.Errorf("unsupported statistics state version %d", state.Version)
 	}
-	m.collector.Restore(state.Hours)
 	return nil
 }
 

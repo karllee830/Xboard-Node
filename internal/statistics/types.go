@@ -7,7 +7,7 @@ const (
 	OtherDimension   = "__other__"
 )
 
-// Dimensions identifies one hourly traffic cube cell.
+// Dimensions identifies one traffic bucket cube cell.
 // It is intentionally comparable so it can be used directly as a map key.
 type Dimensions struct {
 	UserID              int
@@ -49,7 +49,8 @@ type Quality struct {
 	UnknownDestIPBytes  uint64 `json:"unknown_destination_ip_bytes"`
 }
 
-type Hour struct {
+// Bucket is one immutable UTC minute of detailed traffic statistics.
+type Bucket struct {
 	Start   time.Time `json:"start"`
 	Records []Record  `json:"records"`
 	Quality Quality   `json:"quality"`

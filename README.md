@@ -64,16 +64,17 @@ Legacy single-panel config is fully compatible. Appending bindings auto-migrates
 
 ### Detailed traffic statistics (Sing-box only)
 
-The one-command installer enables the collector by default for Sing-box and reports hourly multidimensional aggregates to the Xboard Statistics plugin without changing the billing report path. Pass `--disable-statistics` only when the panel plugin is not ready yet.
+The one-command installer enables the collector by default for Sing-box and reports immutable one-minute multidimensional aggregates to the Xboard Statistics plugin without changing the billing report path. Pass `--disable-statistics` only when the panel plugin is not ready yet.
 
 ```yaml
 statistics:
   enabled: true
   spool_path: "" # defaults to each node's isolated kernel directory
+  # Legacy key names are retained for compatibility; limits apply per minute batch.
   max_hourly_dimensions: 200000
   max_domains_per_user_hour: 5000
   max_destination_ips_per_user_hour: 10000
-  max_pending_batches: 168
+  max_pending_batches: 10080
   request_timeout: 30
   disable_sniff: false
 ```

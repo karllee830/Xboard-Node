@@ -163,11 +163,11 @@ func TestConnTrackerCollectsDetailedTCPDimensions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hours := collector.TakeClosed(time.Now().UTC().Add(time.Hour))
-	if len(hours) != 1 || len(hours[0].Records) != 1 {
-		t.Fatalf("hours=%+v", hours)
+	buckets := collector.TakeClosed(time.Now().UTC().Add(2 * time.Minute))
+	if len(buckets) != 1 || len(buckets[0].Records) != 1 {
+		t.Fatalf("buckets=%+v", buckets)
 	}
-	record := hours[0].Records[0]
+	record := buckets[0].Records[0]
 	if record.UserID != 1 || record.SourceIP != "198.51.100.7" || record.DestinationIP != "203.0.113.80" {
 		t.Fatalf("identity dimensions=%+v", record)
 	}
@@ -209,11 +209,11 @@ func TestConnTrackerCollectsDetailedUDPPerPacketDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hours := collector.TakeClosed(time.Now().UTC().Add(time.Hour))
+	buckets := collector.TakeClosed(time.Now().UTC().Add(2 * time.Minute))
 	var packetRecord *statistics.Record
-	for hourIndex := range hours {
-		for recordIndex := range hours[hourIndex].Records {
-			record := &hours[hourIndex].Records[recordIndex]
+	for bucketIndex := range buckets {
+		for recordIndex := range buckets[bucketIndex].Records {
+			record := &buckets[bucketIndex].Records[recordIndex]
 			if record.DestinationIP == "203.0.113.90" && record.DestinationPort == 53 {
 				packetRecord = record
 			}

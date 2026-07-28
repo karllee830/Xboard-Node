@@ -112,14 +112,16 @@ type NodeConfig struct {
 // StatisticsConfig controls the optional detailed Sing-box traffic collector.
 // This path is independent from the billing traffic report.
 type StatisticsConfig struct {
-	Enabled             bool   `yaml:"enabled"`
-	SpoolPath           string `yaml:"spool_path"`
-	MaxHourlyDimensions int    `yaml:"max_hourly_dimensions"`
-	MaxDomainsPerUser   int    `yaml:"max_domains_per_user_hour"`
-	MaxDestIPsPerUser   int    `yaml:"max_destination_ips_per_user_hour"`
-	MaxPendingBatches   int    `yaml:"max_pending_batches"`
-	RequestTimeout      int    `yaml:"request_timeout"` // seconds
-	DisableSniff        bool   `yaml:"disable_sniff"`
+	Enabled   bool   `yaml:"enabled"`
+	SpoolPath string `yaml:"spool_path"`
+	// The three legacy "hour" keys remain stable for existing configs; with
+	// schema v2 they cap each immutable minute batch.
+	MaxHourlyDimensions int  `yaml:"max_hourly_dimensions"`
+	MaxDomainsPerUser   int  `yaml:"max_domains_per_user_hour"`
+	MaxDestIPsPerUser   int  `yaml:"max_destination_ips_per_user_hour"`
+	MaxPendingBatches   int  `yaml:"max_pending_batches"`
+	RequestTimeout      int  `yaml:"request_timeout"` // seconds
+	DisableSniff        bool `yaml:"disable_sniff"`
 }
 
 // WSConfig holds WebSocket client tuning options.
@@ -647,7 +649,7 @@ func (c *Config) setDefaultsFrom(baseDir string) {
 		c.Statistics.MaxHourlyDimensions = 200000
 	}
 	if c.Statistics.MaxPendingBatches == 0 {
-		c.Statistics.MaxPendingBatches = 168
+		c.Statistics.MaxPendingBatches = 10080
 	}
 	if c.Statistics.MaxDomainsPerUser == 0 {
 		c.Statistics.MaxDomainsPerUser = 5000
