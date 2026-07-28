@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/cedar2025/xboard-node/internal/config"
+	"github.com/karllee830/Xboard-Node/internal/config"
 )
 
 func newTestServer(handler http.HandlerFunc) (*httptest.Server, *Client) {

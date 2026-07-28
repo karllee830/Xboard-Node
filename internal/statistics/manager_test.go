@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cedar2025/xboard-node/internal/config"
+	"github.com/karllee830/Xboard-Node/internal/config"
 )
 
 func TestManagerUploadsGzipBatchWithAuthAndChecksum(t *testing.T) {

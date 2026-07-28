@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cedar2025/xboard-node/internal/config"
-	"github.com/cedar2025/xboard-node/internal/statistics"
+	"github.com/karllee830/Xboard-Node/internal/config"
+	"github.com/karllee830/Xboard-Node/internal/statistics"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing/common/buf"
 	singM "github.com/sagernet/sing/common/metadata"

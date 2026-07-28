@@ -17,7 +17,7 @@ import (
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/transport"
 
-	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/karllee830/Xboard-Node/internal/nlog"
 )
 
 // Access xray's internal config creator registry so we can replace the

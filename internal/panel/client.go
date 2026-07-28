@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cedar2025/xboard-node/internal/config"
-	"github.com/cedar2025/xboard-node/internal/nlog"
 	"github.com/go-viper/mapstructure/v2"
+	"github.com/karllee830/Xboard-Node/internal/config"
+	"github.com/karllee830/Xboard-Node/internal/nlog"
 )
 
 var (

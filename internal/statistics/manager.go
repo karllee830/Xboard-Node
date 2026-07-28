@@ -21,8 +21,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cedar2025/xboard-node/internal/config"
-	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/karllee830/Xboard-Node/internal/config"
+	"github.com/karllee830/Xboard-Node/internal/nlog"
 )
 
 const reportPath = "/api/v2/server/statistics/report"

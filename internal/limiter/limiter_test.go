@@ -4,7 +4,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/cedar2025/xboard-node/internal/model"
+	"github.com/karllee830/Xboard-Node/internal/model"
 )
 
 func TestNew(t *testing.T) {

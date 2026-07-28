@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/karllee830/Xboard-Node/internal/nlog"
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )

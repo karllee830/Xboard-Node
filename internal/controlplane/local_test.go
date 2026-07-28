@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cedar2025/xboard-node/internal/config"
+	"github.com/karllee830/Xboard-Node/internal/config"
 )
 
 func TestLocalControlPlaneInitial(t *testing.T) {
@@ -12,8 +12,8 @@ func TestLocalControlPlaneInitial(t *testing.T) {
 		Kernel: config.KernelConfig{Type: "singbox", LogLevel: "warn"},
 		Standalone: &config.StandaloneConfig{
 			Enabled: true,
-			Node: config.StandaloneNodeConfig{Protocol: "shadowsocks", ServerPort: 8388, Cipher: "aes-128-gcm"},
-			Users: []config.StandaloneUser{{ID: 1, UUID: "secret"}},
+			Node:    config.StandaloneNodeConfig{Protocol: "shadowsocks", ServerPort: 8388, Cipher: "aes-128-gcm"},
+			Users:   []config.StandaloneUser{{ID: 1, UUID: "secret"}},
 		},
 	})
 	bootstrap, err := cp.Initial(context.Background(), nil, nil, nil)

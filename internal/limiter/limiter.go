@@ -4,7 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/cedar2025/xboard-node/internal/model"
+	"github.com/karllee830/Xboard-Node/internal/model"
 )
 
 // Limiter enforces per-user device limits and detects removed users.

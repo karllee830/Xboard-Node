@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/karllee830/Xboard-Node/internal/nlog"
 	"gopkg.in/yaml.v3"
 )
 
