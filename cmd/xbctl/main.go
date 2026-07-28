@@ -30,7 +30,7 @@ const (
 	serviceName            = "xboard-node.service"
 	serviceFilePath        = "/etc/systemd/system/xboard-node.service"
 	defaultInstallRoot     = "/etc/xboard-node"
-	defaultReleaseVersion = "dev"
+	defaultReleaseVersion  = "dev"
 	downloadBase           = "https://github.com/karllee830/Xboard-Node/releases"
 )
 
@@ -49,28 +49,41 @@ type instanceRow struct {
 }
 
 type fileRootConfig struct {
-	Log       *fileLogConfig     `yaml:"log,omitempty"`
-	Kernel    *fileKernelConfig  `yaml:"kernel,omitempty"`
-	Node      *fileNodeConfig    `yaml:"node,omitempty"`
-	WS        *config.WSConfig   `yaml:"ws,omitempty"`
-	Runtime   *fileRuntimeConfig `yaml:"runtime,omitempty"`
-	Cert      *config.CertConfig `yaml:"cert,omitempty"`
-	Instances []fileInstance     `yaml:"instances,omitempty"`
+	Log        *fileLogConfig        `yaml:"log,omitempty"`
+	Kernel     *fileKernelConfig     `yaml:"kernel,omitempty"`
+	Node       *fileNodeConfig       `yaml:"node,omitempty"`
+	WS         *config.WSConfig      `yaml:"ws,omitempty"`
+	Runtime    *fileRuntimeConfig    `yaml:"runtime,omitempty"`
+	Cert       *config.CertConfig    `yaml:"cert,omitempty"`
+	Statistics *fileStatisticsConfig `yaml:"statistics,omitempty"`
+	Instances  []fileInstance        `yaml:"instances,omitempty"`
 }
 
 type fileInstance struct {
-	ID         string             `yaml:"id,omitempty"`
-	Panel      filePanelConfig    `yaml:"panel"`
-	Node       *fileNodeConfig    `yaml:"node,omitempty"`
-	Kernel     fileKernelConfig   `yaml:"kernel"`
-	Log        fileLogConfig      `yaml:"log"`
-	Runtime    *fileRuntimeConfig `yaml:"runtime,omitempty"`
-	HealthPort int                `yaml:"health_port,omitempty"`
-	Machine    *fileMachineConfig `yaml:"machine,omitempty"`
-	Standalone map[string]any     `yaml:"standalone,omitempty"`
-	Cert       *config.CertConfig `yaml:"cert,omitempty"`
-	WS         *config.WSConfig   `yaml:"ws,omitempty"`
-	Nodes      []config.NodeEntry `yaml:"nodes,omitempty"`
+	ID         string                `yaml:"id,omitempty"`
+	Panel      filePanelConfig       `yaml:"panel"`
+	Node       *fileNodeConfig       `yaml:"node,omitempty"`
+	Kernel     fileKernelConfig      `yaml:"kernel"`
+	Log        fileLogConfig         `yaml:"log"`
+	Runtime    *fileRuntimeConfig    `yaml:"runtime,omitempty"`
+	HealthPort int                   `yaml:"health_port,omitempty"`
+	Machine    *fileMachineConfig    `yaml:"machine,omitempty"`
+	Standalone map[string]any        `yaml:"standalone,omitempty"`
+	Cert       *config.CertConfig    `yaml:"cert,omitempty"`
+	WS         *config.WSConfig      `yaml:"ws,omitempty"`
+	Nodes      []config.NodeEntry    `yaml:"nodes,omitempty"`
+	Statistics *fileStatisticsConfig `yaml:"statistics,omitempty"`
+}
+
+type fileStatisticsConfig struct {
+	Enabled             bool   `yaml:"enabled"`
+	SpoolPath           string `yaml:"spool_path,omitempty"`
+	MaxHourlyDimensions int    `yaml:"max_hourly_dimensions,omitempty"`
+	MaxDomainsPerUser   int    `yaml:"max_domains_per_user_hour,omitempty"`
+	MaxDestIPsPerUser   int    `yaml:"max_destination_ips_per_user_hour,omitempty"`
+	MaxPendingBatches   int    `yaml:"max_pending_batches,omitempty"`
+	RequestTimeout      int    `yaml:"request_timeout,omitempty"`
+	DisableSniff        bool   `yaml:"disable_sniff,omitempty"`
 }
 
 type filePanelConfig struct {
@@ -203,7 +216,7 @@ func printUsage() {
   xbctl list [--output text|json]
   xbctl instance list [--output text|json]
   xbctl instance get <id> [--output text|json]
-  xbctl config init --mode node|machine --panel-url URL --token TOKEN [flags]
+  xbctl config init --mode node|machine --panel-url URL --token TOKEN [--statistics-enabled true|false] [flags]
   xbctl config health-port [--config PATH]
   xbctl service status|start|stop|restart|enable|disable|logs
   xbctl health
@@ -838,6 +851,46 @@ func normalizeRootInstances(root *config.RootConfig) []config.Config {
 	return nil
 }
 
+func writableStatistics(value config.StatisticsConfig) *fileStatisticsConfig {
+	if !value.Enabled && value.SpoolPath == "" && value.MaxHourlyDimensions == 0 &&
+		value.MaxDomainsPerUser == 0 && value.MaxDestIPsPerUser == 0 &&
+		value.MaxPendingBatches == 0 && value.RequestTimeout == 0 && !value.DisableSniff {
+		return nil
+	}
+	return &fileStatisticsConfig{
+		Enabled:             value.Enabled,
+		SpoolPath:           value.SpoolPath,
+		MaxHourlyDimensions: value.MaxHourlyDimensions,
+		MaxDomainsPerUser:   value.MaxDomainsPerUser,
+		MaxDestIPsPerUser:   value.MaxDestIPsPerUser,
+		MaxPendingBatches:   value.MaxPendingBatches,
+		RequestTimeout:      value.RequestTimeout,
+		DisableSniff:        value.DisableSniff,
+	}
+}
+
+func configureDetailedStatistics(value *config.StatisticsConfig, enabled bool) {
+	value.Enabled = enabled
+	if !enabled {
+		return
+	}
+	if value.MaxHourlyDimensions == 0 {
+		value.MaxHourlyDimensions = 200000
+	}
+	if value.MaxDomainsPerUser == 0 {
+		value.MaxDomainsPerUser = 5000
+	}
+	if value.MaxDestIPsPerUser == 0 {
+		value.MaxDestIPsPerUser = 10000
+	}
+	if value.MaxPendingBatches == 0 {
+		value.MaxPendingBatches = 168
+	}
+	if value.RequestTimeout == 0 {
+		value.RequestTimeout = 30
+	}
+}
+
 func writeRootConfig(path string, root *config.RootConfig) error {
 	instances := root.Instances
 	if len(instances) == 0 && root.Config.Panel.URL != "" {
@@ -870,6 +923,7 @@ func writeRootConfig(path string, root *config.RootConfig) error {
 	if p.Cert.CertMode != "" || p.Cert.Domain != "" || p.Cert.CertFile != "" || p.Cert.AutoTLS {
 		out.Cert = &p.Cert
 	}
+	out.Statistics = writableStatistics(p.Statistics)
 
 	for _, inst := range instances {
 		fi := fileInstance{
@@ -926,6 +980,7 @@ func writeRootConfig(path string, root *config.RootConfig) error {
 		if len(inst.Nodes) > 0 {
 			fi.Nodes = inst.Nodes
 		}
+		fi.Statistics = writableStatistics(inst.Statistics)
 		out.Instances = append(out.Instances, fi)
 	}
 	data, err := yaml.Marshal(&out)
@@ -1214,23 +1269,24 @@ func runConfig(args []string) error {
 //	ENV_KEY=<credential-env-var-name>
 func runConfigInit(args []string) error {
 	var (
-		configIn       string
-		configOut      string
-		credentialsIn  string
-		credentialsOut string
-		metaPath       string
-		mode           string
-		panelURL       string
-		nodeID         int
-		nodeType       string
-		machineID      int
-		kernelType     string
-		healthPort     int
-		gomemlimit     string
-		gogc           int
-		installRoot    string
-		token          string
-		releaseVersion string
+		configIn          string
+		configOut         string
+		credentialsIn     string
+		credentialsOut    string
+		metaPath          string
+		mode              string
+		panelURL          string
+		nodeID            int
+		nodeType          string
+		machineID         int
+		kernelType        string
+		healthPort        int
+		gomemlimit        string
+		gogc              int
+		installRoot       string
+		token             string
+		releaseVersion    string
+		statisticsEnabled = true
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -1305,6 +1361,13 @@ func runConfigInit(args []string) error {
 		case "--version":
 			i++
 			releaseVersion = args[i]
+		case "--statistics-enabled":
+			i++
+			v, err := strconv.ParseBool(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --statistics-enabled: %w", err)
+			}
+			statisticsEnabled = v
 		}
 	}
 
@@ -1352,6 +1415,10 @@ func runConfigInit(args []string) error {
 		installRoot = "/etc/xboard-node"
 	}
 	inst.Kernel.ConfigDir = filepath.Join(installRoot, "instances", instanceID)
+	configureDetailedStatistics(
+		&inst.Statistics,
+		statisticsEnabled && !strings.EqualFold(kernelType, "xray"),
+	)
 
 	// Build credential env key.
 	envKey := "INSTANCE_" + strings.ToUpper(strings.ReplaceAll(instanceID, "-", "_"))

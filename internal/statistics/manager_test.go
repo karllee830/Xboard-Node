@@ -194,3 +194,15 @@ func TestRetryBackoffIsBoundedAndJittered(t *testing.T) {
 		}
 	}
 }
+
+func TestReportStatusClassificationKeepsMissingPluginBatchPending(t *testing.T) {
+	if isPermanentReportStatus(http.StatusNotFound) {
+		t.Fatal("404 should remain pending until the panel plugin is installed")
+	}
+	if isPermanentReportStatus(http.StatusTooManyRequests) {
+		t.Fatal("429 should be retried")
+	}
+	if !isPermanentReportStatus(http.StatusUnprocessableEntity) {
+		t.Fatal("invalid protocol payload should be rejected permanently")
+	}
+}

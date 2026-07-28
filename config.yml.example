@@ -25,9 +25,9 @@
 #     log:
 #       level: "debug"   # override for this instance only
 
-# ── Optional detailed traffic statistics (Sing-box only) ──
+# ── Detailed traffic statistics (enabled by the installer for Sing-box) ──
 # statistics:
-#   enabled: false
+#   enabled: true
 #   # Empty uses <kernel.config_dir>/statistics, isolating each node.
 #   spool_path: ""
 #   max_hourly_dimensions: 200000

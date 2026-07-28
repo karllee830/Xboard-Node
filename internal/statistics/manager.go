@@ -256,8 +256,12 @@ func (m *Manager) upload(ctx context.Context, path string, pendingBatches int) (
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return false, nil
 	}
-	permanent := resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests
+	permanent := isPermanentReportStatus(resp.StatusCode)
 	return permanent, fmt.Errorf("statistics report status %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
+}
+
+func isPermanentReportStatus(status int) bool {
+	return status >= 400 && status < 500 && status != http.StatusNotFound && status != http.StatusTooManyRequests
 }
 
 func (m *Manager) saveCurrent(now time.Time) error {

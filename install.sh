@@ -28,6 +28,7 @@ DEFAULT_RELEASE_VERSION="dev"
 DEFAULT_LOG_LEVEL="info"
 DEFAULT_KERNEL_LOG_LEVEL="warn"
 DEFAULT_DOWNLOAD_BASE="https://github.com/karllee830/Xboard-Node/releases"
+DEFAULT_INSTALLER_URL="https://raw.githubusercontent.com/karllee830/Xboard-Node/dev/install.sh"
 
 ACTION="${DEFAULT_ACTION}"
 MODE=""
@@ -47,6 +48,7 @@ CLI_BINARY_SOURCE=""
 FORCE_RECONFIGURE=0
 PURGE=0
 YES=0
+STATISTICS_ENABLED=1
 ARCH=""
 OS=""
 DOWNLOAD_URL=""
@@ -192,6 +194,7 @@ usage() {
     --health-port       Local health port (default: 65530, use 0 to disable)
     --gomemlimit        Runtime GOMEMLIMIT value, e.g. 256MiB
     --gogc              Runtime GOGC value, e.g. 50
+    --disable-statistics Do not enable detailed Sing-box traffic statistics
     --force-reconfigure Overwrite an existing install even if mode/target changed
     --purge             With uninstall, delete /etc/xboard-node too
     --yes, -y           Non-interactive confirmation for destructive operations
@@ -264,6 +267,10 @@ parse_args() {
             --gogc)
                 RUNTIME_GOGC="$2"
                 shift 2
+                ;;
+            --disable-statistics)
+                STATISTICS_ENABLED=0
+                shift
                 ;;
             --force-reconfigure)
                 FORCE_RECONFIGURE=1
@@ -556,6 +563,7 @@ render_config() {
         --credentials-out "$TMP_DIR/credentials.env"
         --meta "$TMP_DIR/install-meta.json"
         --install-root "$INSTALL_ROOT"
+        --statistics-enabled "$STATISTICS_ENABLED"
     )
     if [ -f "$CONFIG_FILE" ]; then
         init_args+=(--config "$CONFIG_FILE")
@@ -651,14 +659,28 @@ install_staged_files() {
     install -m 600 "$TMP_DIR/config.yml" "$CONFIG_FILE"
     install -m 600 "$TMP_DIR/credentials.env" "$CREDENTIALS_FILE"
     install -m 644 "$TMP_DIR/install-meta.json" "$INSTALL_META"
-    if [ -f "$0" ] && [ "$(realpath "$0")" != "$(realpath "$INSTALLER_COPY_PATH" 2>/dev/null || echo "$INSTALLER_COPY_PATH")" ]; then
-        install -m 755 "$0" "$INSTALLER_COPY_PATH"
-    fi
+    install_installer_copy
     install -m 755 "$TMP_DIR/xbctl" "$CLI_PATH"
     ln -sf "$CLI_PATH" /usr/bin/xbctl 2>/dev/null || true
     install -m 644 "$TMP_DIR/${SERVICE_NAME}" "$SERVICE_PATH"
     systemctl daemon-reload
     systemctl enable "$SERVICE_NAME" > /dev/null 2>&1
+}
+
+install_installer_copy() {
+    local source_path=""
+    if [ -f "$0" ] && head -n 1 "$0" 2>/dev/null | grep -q '^#!.*bash'; then
+        source_path="$0"
+    else
+        source_path="$TMP_DIR/install.sh"
+        if ! curl -fsSL "$DEFAULT_INSTALLER_URL" -o "$source_path"; then
+            log_warn "Unable to save installer copy from ${DEFAULT_INSTALLER_URL}"
+            return
+        fi
+    fi
+    if [ "$(realpath "$source_path")" != "$(realpath "$INSTALLER_COPY_PATH" 2>/dev/null || echo "$INSTALLER_COPY_PATH")" ]; then
+        install -m 755 "$source_path" "$INSTALLER_COPY_PATH"
+    fi
 }
 
 wait_for_health() {
@@ -742,6 +764,7 @@ perform_upgrade() {
     install -m 755 "$TMP_DIR/xboard-node" "$BINARY_PATH"
     install -m 755 "$TMP_DIR/xbctl" "$CLI_PATH"
     ln -sf "$CLI_PATH" /usr/bin/xbctl 2>/dev/null || true
+    install_installer_copy
     install -m 644 "$TMP_DIR/${SERVICE_NAME}" "$SERVICE_PATH"
     systemctl daemon-reload
     systemctl restart "$SERVICE_NAME"
