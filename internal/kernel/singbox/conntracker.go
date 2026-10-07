@@ -653,14 +653,14 @@ type trackedConn struct {
 // ConnHandshakeSuccess is called by sing-box after the actual outbound
 // connection succeeds. For direct outbound only, RemoteAddr is the target
 // server; proxy outbounds would otherwise report the proxy address.
+// Always forward the notification so protocols such as AnyTLS can acknowledge it.
 func (c *trackedConn) ConnHandshakeSuccess(conn net.Conn) error {
-	if !c.direct || c.detailed == nil || conn == nil {
-		return nil
+	if c.direct && c.detailed != nil && conn != nil {
+		if address := netipFromAddr(conn.RemoteAddr()); address.IsValid() {
+			c.detailed.SetDestinationIP(address.String())
+		}
 	}
-	if address := netipFromAddr(conn.RemoteAddr()); address.IsValid() {
-		c.detailed.SetDestinationIP(address.String())
-	}
-	return nil
+	return N.ReportConnHandshakeSuccess(c.Conn, conn)
 }
 
 func netipFromAddr(address net.Addr) netip.Addr {

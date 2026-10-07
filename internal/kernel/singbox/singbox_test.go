@@ -13,6 +13,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing/common/buf"
 	singM "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 	"golang.org/x/time/rate"
 )
 
@@ -101,6 +102,82 @@ func testInboundContext(uuid, ip string) adapter.InboundContext {
 		User:   uuid,
 		Source: singM.Socksaddr{Addr: netip.MustParseAddr(ip)},
 	}
+}
+
+type testHandshakeConn struct {
+	testConn
+	handshakeCalls int
+	handshakeErr   error
+}
+
+func (c *testHandshakeConn) HandshakeSuccess() error {
+	c.handshakeCalls++
+	return c.handshakeErr
+}
+
+type testConnHandshakeConn struct {
+	testConn
+	handshakeCalls int
+	handshakeConn  net.Conn
+	handshakeErr   error
+}
+
+func (c *testConnHandshakeConn) ConnHandshakeSuccess(conn net.Conn) error {
+	c.handshakeCalls++
+	c.handshakeConn = conn
+	return c.handshakeErr
+}
+
+func TestConnTrackerForwardsHandshakeSuccess(t *testing.T) {
+	for _, detailed := range []bool{false, true} {
+		name := "statistics_disabled"
+		if detailed {
+			name = "statistics_enabled"
+		}
+		t.Run(name, func(t *testing.T) {
+			tracker := NewConnTracker(0)
+			tracker.SetUserMap(map[string]int{"uuid-1": 1})
+			if detailed {
+				tracker.SetDetailedCollector(statistics.NewCollector(100))
+			}
+			base := &testHandshakeConn{}
+			wrapped := tracker.RoutedConnection(context.Background(), base, testInboundContext("uuid-1", "192.0.2.1"), nil, nil)
+			defer wrapped.Close()
+
+			// AnyTLS implements HandshakeSuccess; the tracker must preserve it.
+			if err := N.ReportConnHandshakeSuccess(wrapped, &testConn{}); err != nil {
+				t.Fatal(err)
+			}
+			if base.handshakeCalls != 1 {
+				t.Fatalf("underlying handshake calls = %d, want 1", base.handshakeCalls)
+			}
+		})
+	}
+}
+
+func TestTrackedConnForwardsHandshakeErrors(t *testing.T) {
+	wantErr := errors.New("handshake acknowledgement failed")
+	remote := &testConn{}
+	t.Run("legacy", func(t *testing.T) {
+		base := &testHandshakeConn{handshakeErr: wantErr}
+		wrapped := &trackedConn{Conn: base}
+		if err := N.ReportConnHandshakeSuccess(wrapped, remote); !errors.Is(err, wantErr) {
+			t.Fatalf("handshake error = %v, want %v", err, wantErr)
+		}
+		if base.handshakeCalls != 1 {
+			t.Fatalf("underlying handshake calls = %d, want 1", base.handshakeCalls)
+		}
+	})
+	t.Run("connection_aware", func(t *testing.T) {
+		base := &testConnHandshakeConn{handshakeErr: wantErr}
+		wrapped := &trackedConn{Conn: base}
+		if err := N.ReportConnHandshakeSuccess(wrapped, remote); !errors.Is(err, wantErr) {
+			t.Fatalf("handshake error = %v, want %v", err, wantErr)
+		}
+		if base.handshakeCalls != 1 || base.handshakeConn != remote {
+			t.Fatalf("handshake calls = %d, remote = %v; want 1 and original remote", base.handshakeCalls, base.handshakeConn)
+		}
+	})
 }
 
 func TestConnTrackerRoutedConnectionTracksTrafficAndAliveIPs(t *testing.T) {
